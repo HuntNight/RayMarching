@@ -1,0 +1,96 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+
+struct FigureState
+{
+    float3 pos;
+    float3 localEuler;
+    float3 size;
+};
+RWTexture2D<float4> Result;
+uint2 Size;
+StructuredBuffer<FigureState> Figures;
+int numFigures;
+float3 camPosition;
+float3 lightPosition;
+float4x4 cameraToWorld;
+float4x4 cameraInverseProjection;
+const static float epsilon = 0.01;
+const static float maxDist = 100;
+const static int maxIterations = 100;
+
+
+float SMin( float a, float b)
+{
+    float k = 0.5f;
+    float h = clamp( 0.5+0.5*(b-a)/k, 0.0, 1.0 );
+    float blendDst = lerp( b, a, h ) - k*h*(1.0-h);
+    return blendDst;
+}
+float GetDistance(float3 p)
+{
+    float min = maxDist;
+    for (int i = 0; i < numFigures; i++)
+    {
+        FigureState current = Figures[i];
+        float rad = current.size.x;
+        float dist = length(current.pos - p) - rad;
+        min = SMin(min, dist);
+    }
+    return min;
+}
+float RayMarching(float3 ro, float3 rd)
+{
+    float dist = 0;
+    for (int i = 0; i < maxIterations; i++)
+    {
+        float3 p = ro + rd * dist;
+        float curDist = GetDistance(p);
+        dist += curDist;
+        if (curDist < epsilon || dist > maxDist) break;
+    }
+    return dist;
+}
+float3 GetNormal (float3 p)
+{
+    float d = GetDistance(p);
+    float3 dist = float3(d, d, d);
+    float2 bias = float2(0, 0.01);
+    float3 res = dist - float3(
+        GetDistance(p - bias.yxx),
+        GetDistance(p - bias.xyx),
+        GetDistance(p - bias.xxy));
+    return normalize(res);
+}
+float GetLight(float3 p)
+{
+    float3 toLight = normalize(lightPosition - p);
+    float3 normal = GetNormal(p);
+    float res = dot(toLight, normal);
+    return clamp(res, 0, 1);
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    float2 uv = (id.xy - float2(Size.x,Size.y) / 2) / float2(Size.x, Size.y);
+    float3 bgCol = float3(0, 0, 0);
+    float3 fgCol = float3(1, 1, 1);
+
+    //float3 direction = mul(cameraInverseProjection, float4(uv, 1, 1));
+    //direction = mul(cameraToWorld, direction);
+    //float3 origin = camPosition;
+
+    float3 origin = mul(cameraToWorld, float4(0,0,0,1)).xyz;
+    float3 direction = mul(cameraInverseProjection, float4(uv,0,1)).xyz;
+    direction = mul(cameraToWorld, float4(direction,0)).xyz;
+    direction = normalize(direction);
+
+    float distance = RayMarching(origin, direction);
+    float3 p = origin + direction * distance;
+    float light = GetLight(p);
+    
+
+    Result[id.xy] = float4(float3(light, light, light), 1);
+}
